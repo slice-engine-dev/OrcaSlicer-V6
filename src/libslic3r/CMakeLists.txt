@@ -167,6 +167,8 @@ set(lisbslic3r_sources
     GCode/WipeTower2.hpp
     GCode/GCodeProcessor.cpp
     GCode/GCodeProcessor.hpp
+    GCode/ProcessCommand.hpp
+    GCode/PostProcessExt.hpp
     GCode/AvoidCrossingPerimeters.cpp
     GCode/AvoidCrossingPerimeters.hpp
     GCode/ExtrusionProcessor.hpp

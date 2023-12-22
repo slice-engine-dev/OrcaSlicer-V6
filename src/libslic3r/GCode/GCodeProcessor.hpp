@@ -126,6 +126,20 @@ namespace Slic3r {
 
     struct GCodeProcessorResult
     {
+        struct v6InfoStat {
+            std::array<std::vector<size_t>, 6> toolChangePos;//T0-T6 Pos
+            std::array<std::vector<size_t>, 6> toolChangeTemps;//T0-T6 temps
+            void reset() {
+                for (auto& vec : toolChangePos) {
+                    vec.clear(); //
+                    vec.shrink_to_fit();
+                }
+                for (auto& vec : toolChangeTemps) {
+                    vec.clear(); //
+                    vec.shrink_to_fit();
+                }
+            }
+        };
         ConflictResultOpt conflict_result;
         BedMatchResult  bed_match_result;
 
@@ -158,6 +172,8 @@ namespace Slic3r {
             float fan_speed{ 0.0f }; // percentage
             float temperature{ 0.0f }; // Celsius degrees
             float time{ 0.0f }; // s
+            unsigned int g1_line_id{ 0 };
+            float move_time{ 0.0 };
             float layer_duration{ 0.0f }; // s (layer id before finalize)
 
 
@@ -198,6 +214,7 @@ namespace Slic3r {
         int timelapse_warning_code {0};
         bool support_traditional_timelapse{true};
         float printable_height;
+        v6InfoStat m_v6_info; //
         SettingsIds settings_ids;
         size_t extruders_count;
         std::vector<std::string> extruder_colors;
@@ -234,6 +251,7 @@ namespace Slic3r {
             timelapse_warning_code = other.timelapse_warning_code;
             printable_height = other.printable_height;
             settings_ids = other.settings_ids;
+            m_v6_info = other.m_v6_info;
             extruders_count = other.extruders_count;
             extruder_colors = other.extruder_colors;
             filament_diameters = other.filament_diameters;
@@ -383,7 +401,6 @@ namespace Slic3r {
         };
 
 
-    private:
         struct TimeMachine
         {
             struct State
@@ -443,6 +460,7 @@ namespace Slic3r {
             CustomGCodeTime gcode_time;
             std::vector<TimeBlock> blocks;
             std::vector<G1LinesCacheItem> g1_times_cache;
+            std::unordered_map<unsigned int, float> g1_times_cache_map;
             std::array<float, static_cast<size_t>(EMoveType::Count)> moves_time;
             std::array<float, static_cast<size_t>(ExtrusionRole::erCount)> roles_time;
             std::vector<float> layers_time;
@@ -456,6 +474,7 @@ namespace Slic3r {
             void calculate_time(size_t keep_last_n_blocks = 0, float additional_time = 0.0f);
         };
 
+     private:
         struct TimeProcessor
         {
             struct Planner
@@ -486,7 +505,7 @@ namespace Slic3r {
 
             // post process the file with the given filename to add remaining time lines M73
             // and updates moves' gcode ids accordingly
-            void post_process(const std::string& filename, std::vector<GCodeProcessorResult::MoveVertex>& moves, std::vector<size_t>& lines_ends, size_t total_layer_num);
+            void post_process(const std::string& filename, std::vector<GCodeProcessorResult::MoveVertex>& moves, std::vector<size_t>& lines_ends, size_t total_layer_num, GCodeProcessorResult::v6InfoStat& v6info);
         };
 
         struct UsedFilaments  // filaments per ColorChange
@@ -695,6 +714,7 @@ namespace Slic3r {
         float m_zero_layer_height; // mm
         bool m_processing_start_custom_gcode;
         unsigned int m_g1_line_id;
+        std::vector<unsigned int> m_g1_line_pos;
         unsigned int m_layer_id;
         CpColor m_cp_color;
         SeamsDetector m_seams_detector;
@@ -769,7 +789,8 @@ namespace Slic3r {
 
         //BBS: set offset for gcode writer
         void set_xy_offset(double x, double y) { m_x_offset = x; m_y_offset = y; }
-
+        const std::vector<unsigned int>& get_g1_line_pos() const { return m_g1_line_pos; };
+        void get_g1_line_cache();
     private:
         void apply_config(const DynamicPrintConfig& config);
         void apply_config_simplify3d(const std::string& filename);

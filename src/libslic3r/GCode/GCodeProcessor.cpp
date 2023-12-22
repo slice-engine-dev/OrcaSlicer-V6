@@ -365,6 +365,7 @@ void GCodeProcessor::TimeMachine::calculate_time(size_t keep_last_n_blocks, floa
             }
         }
         layers_time[block.layer_id - 1] += block_time;
+        g1_times_cache_map[block.g1_line_id] = time;
         //BBS
         if (block.flags.prepare_stage)
             prepare_time += block_time;
@@ -397,7 +398,7 @@ void GCodeProcessor::TimeProcessor::reset()
     machines[static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Normal)].enabled = true;
 }
 
-void GCodeProcessor::TimeProcessor::post_process(const std::string& filename, std::vector<GCodeProcessorResult::MoveVertex>& moves, std::vector<size_t>& lines_ends, size_t total_layer_num)
+void GCodeProcessor::TimeProcessor::post_process(const std::string& filename, std::vector<GCodeProcessorResult::MoveVertex>& moves, std::vector<size_t>& lines_ends, size_t total_layer_num, GCodeProcessorResult::v6InfoStat& v6info)
 {
     FilePtr in{ boost::nowide::fopen(filename.c_str(), "rb") };
     if (in.f == nullptr)
@@ -739,6 +740,23 @@ void GCodeProcessor::TimeProcessor::post_process(const std::string& filename, st
             ++curr_offset_id;
         }
         move.gcode_id += total_offset;
+        
+    }
+
+    
+    total_offset = 0;
+    auto& toolChangePos = v6info.toolChangePos;
+    for (auto& toolPos : toolChangePos) {
+        for (size_t& id : toolPos) {
+            for (const auto& offset : offsets) {
+                if (id >= offset.first) {
+                    id += offset.second;
+                }
+                else {
+                    break;
+                }
+            }
+        }
     }
 
     if (rename_file(out_path, filename)) {
@@ -889,6 +907,7 @@ void GCodeProcessorResult::reset() {
     timelapse_warning_code = 0;
     printable_height = 0.0f;
     settings_ids.reset();
+    m_v6_info.reset();
     extruders_count = 0;
     extruder_colors = std::vector<std::string>();
     filament_diameters = std::vector<float>(MIN_EXTRUDERS_COUNT, DEFAULT_FILAMENT_DIAMETER);
@@ -1076,6 +1095,22 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     if (z_offset != nullptr)
         m_z_offset = z_offset->value;
 
+}
+void GCodeProcessor::get_g1_line_cache()
+{
+    auto k_map = m_time_processor.machines[0].g1_times_cache_map;
+    float last_time = 0.0;
+    for (auto& re_move : m_result.moves) {
+        auto g1_id = re_move.g1_line_id;
+        auto it = k_map.find(g1_id);
+        if (it != k_map.end()) {
+            re_move.move_time = it->second;
+            last_time = it->second;
+        }
+        else {
+            re_move.move_time = last_time;
+        }
+    }
 }
 
 void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
@@ -1427,6 +1462,7 @@ void GCodeProcessor::reset()
     m_first_layer_height = 0.0f;
     m_processing_start_custom_gcode = false;
     m_g1_line_id = 0;
+    m_g1_line_pos.clear();
     m_layer_id = 0;
     m_cp_color.reset();
 
@@ -1598,7 +1634,7 @@ void GCodeProcessor::finalize(bool post_process)
     m_width_compare.output();
 #endif // ENABLE_GCODE_VIEWER_DATA_CHECKING
     if (post_process){
-        m_time_processor.post_process(m_result.filename, m_result.moves, m_result.lines_ends, m_layer_id);
+        m_time_processor.post_process(m_result.filename, m_result.moves, m_result.lines_ends, m_layer_id, m_result.m_v6_info);
     }
 #if ENABLE_GCODE_VIEWER_STATISTICS
     m_result.time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - m_start_time).count();
@@ -4181,6 +4217,12 @@ void GCodeProcessor::process_T(const std::string_view command)
                     m_time_processor.extruder_unloaded = false;
                     extra_time += get_filament_load_time(static_cast<size_t>(m_extruder_id));
                     simulate_st_synchronize(extra_time);
+
+                    int exruder_no = static_cast<int>(m_extruder_id);
+                    if (m_extruder_temps[m_extruder_id] > 0.0 && m_layer_id > 0) {
+                        m_result.m_v6_info.toolChangePos[exruder_no].push_back(m_line_id);
+                        m_result.m_v6_info.toolChangeTemps[exruder_no].push_back(m_extruder_temps[m_extruder_id]);
+                    }
                 }
 
                 // store tool change move
@@ -4223,6 +4265,8 @@ void GCodeProcessor::store_move_vertex(EMoveType type, EMovePathType path_type)
         m_fan_speed,
         m_extruder_temps[m_extruder_id],
         static_cast<float>(m_result.moves.size()),
+        m_g1_line_id,
+        0.0,
         static_cast<float>(m_layer_id), //layer_duration: set later
         //BBS: add arc move related data
         path_type,
