@@ -48,7 +48,7 @@ jobs:
           $ref = "${{ github.ref }}"
           $eventName = "${{ github.event_name }}"
           $prNumber = "${{ github.event.number }}"
-      
+          $ver = "anker"
           if ($ref -eq 'refs/heads/main') {
               $ver = "nightly" + $date.Substring(2)
           } elseif ($eventName -eq 'pull_request') {
