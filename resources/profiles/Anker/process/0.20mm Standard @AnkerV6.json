@@ -122,7 +122,7 @@
     "post_process": [],
     "precise_outer_wall": "0",
     "prime_tower_brim_width": "3",
-    "prime_tower_width": "50",
+    "prime_tower_width": "30",
     "prime_volume": "15",
     "print_flow_ratio": "1",
     "print_sequence": "by layer",

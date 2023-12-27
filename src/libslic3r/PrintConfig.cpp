@@ -4279,7 +4279,7 @@ def = this->add("filament_loading_speed", coFloats);
     def->tooltip = L("Wipe tower rotation angle with respect to x-axis.");
     def->sidetext = L("°");
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(0.));
+    def->set_default_value(new ConfigOptionFloat(90.));
 
     def = this->add("prime_tower_brim_width", coFloat);
     def->label = L("Brim width");
