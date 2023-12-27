@@ -221,7 +221,7 @@ public:
     bool            needs_retraction(const Polyline& travel, ExtrusionRole role, LiftType& lift_type);
     std::string     retract(bool toolchange = false, bool is_last_retraction = false, LiftType lift_type = LiftType::NormalLift);
     std::string     unretract() { return m_writer.unlift() + m_writer.unretract(); }
-    std::string     set_extruder(unsigned int extruder_id, double print_z, bool by_object=false);
+    std::string     set_extruder(unsigned int extruder_id, double print_z, bool by_object = false, Vec2f start_pos = Vec2f(0.f, 0.f));
     bool is_BBL_Printer();
 
     // SoftFever
@@ -443,6 +443,7 @@ private:
     // scaled G-code resolution
     double                              m_scaled_resolution;
     GCodeWriter                         m_writer;
+    int                                 m_current_region_idx = -1;
 
     struct PlaceholderParserIntegration {
         void reset();
@@ -522,6 +523,20 @@ private:
     Point                               m_last_pos;
     bool                                m_last_pos_defined;
 
+        // add by firva, for v6 tool change
+    struct tool_change_later
+    {
+        bool         is_tool_change_later{false};
+        unsigned int extruder_id{0};
+        double       print_z{0.0};
+        void         reset()
+        {
+            is_tool_change_later = false;
+            extruder_id          = 0;
+            print_z              = 0.0;
+        };
+    };
+    tool_change_later                   m_tool_change_later;
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;
 

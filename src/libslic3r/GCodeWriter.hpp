@@ -82,6 +82,7 @@ public:
     Vec3d       get_position() const { return m_pos; }
     void       set_position(const Vec3d& in) { m_pos = in; }
     double      get_zhop() const { return m_lifted; }
+    void      set_zhop(double lift) { m_lifted = lift; }
 
     //BBS: set offset for gcode writer
     void set_xy_offset(double x, double y) { m_x_offset = x; m_y_offset = y; }
@@ -110,6 +111,7 @@ public:
     static bool full_gcode_comment;
     //Radian threshold of slope for lazy lift and spiral lift;
     static const double slope_threshold;
+    LiftType            m_to_lift_type;
     //SoftFever
     void set_is_bbl_machine(bool bval) {m_is_bbl_printers = bval;}
     const bool is_bbl_printers() const {return m_is_bbl_printers;}
@@ -147,7 +149,6 @@ public:
 
     // BBS
     double          m_to_lift;
-    LiftType        m_to_lift_type;
     Vec3d           m_pos = Vec3d::Zero();
     //BBS: this flag is used to indicate whether the m_pos is real.
     //A example that of the first move, the m_pos is zero, but the real position of extruder doesn't

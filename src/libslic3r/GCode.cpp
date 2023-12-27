@@ -732,9 +732,9 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
 
         const bool needs_toolchange = gcodegen.writer().need_toolchange(new_extruder_id);
         const bool will_go_down     = !is_approx(z, current_z);
-        const bool is_ramming       = (gcodegen.config().single_extruder_multi_material) ||
+        const bool is_ramming       = !gcodegen.check_machine_v6() && ((gcodegen.config().single_extruder_multi_material) ||
                                 (!gcodegen.config().single_extruder_multi_material &&
-                                 gcodegen.config().filament_multitool_ramming.get_at(tcr.initial_tool));
+                                 gcodegen.config().filament_multitool_ramming.get_at(tcr.initial_tool)));
         const bool should_travel_to_tower = !tcr.priming && (tcr.force_travel     // wipe tower says so
                                                              || !needs_toolchange // this is just finishing the tower with no toolchange
                                                              || is_ramming);
@@ -762,7 +762,7 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
         if (tcr.priming || (new_extruder_id >= 0 && needs_toolchange)) {
             if (is_ramming)
                 gcodegen.m_wipe.reset_path();                                           // We don't want wiping on the ramming lines.
-            toolchange_gcode_str = gcodegen.set_extruder(new_extruder_id, tcr.print_z); // TODO: toolchange_z vs print_z
+            toolchange_gcode_str = gcodegen.set_extruder(new_extruder_id, tcr.print_z, false, start_pos); // TODO: toolchange_z vs print_z
             if (gcodegen.config().enable_prime_tower)
                 deretraction_str = gcodegen.unretract();
         }
@@ -3980,28 +3980,34 @@ LayerResult GCode::process_layer(
     // Extrude the skirt, brim, support, perimeters, infill ordered by the extruders.
     for (unsigned int extruder_id : layer_tools.extruders)
     {
-        if (has_wipe_tower) {
-            if (!m_wipe_tower->is_empty_wipe_tower_gcode(*this, extruder_id, extruder_id == layer_tools.extruders.back())) {
-                if (need_insert_timelapse_gcode_for_traditional && !has_insert_timelapse_gcode) {
-                    gcode += this->retract(false, false, LiftType::NormalLift);
-                    m_writer.add_object_change_labels(gcode);
+        if (check_machine_v6() && !has_wipe_tower) {
+            m_tool_change_later.is_tool_change_later = true;
+            m_tool_change_later.extruder_id          = extruder_id;
+            m_tool_change_later.print_z              = print_z;
+        }
 
-                    std::string timepals_gcode = insert_timelapse_gcode();
-                    gcode += timepals_gcode;
-                    m_writer.set_current_position_clear(false);
-                    //BBS: check whether custom gcode changes the z position. Update if changed
-                    double temp_z_after_timepals_gcode;
-                    if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
-                        Vec3d pos = m_writer.get_position();
-                        pos(2) = temp_z_after_timepals_gcode;
-                        m_writer.set_position(pos);
+        if (has_wipe_tower) {
+                if (!m_wipe_tower->is_empty_wipe_tower_gcode(*this, extruder_id, extruder_id == layer_tools.extruders.back())) {
+                    if (need_insert_timelapse_gcode_for_traditional && !has_insert_timelapse_gcode) {
+                        gcode += this->retract(false, false, LiftType::NormalLift);
+                        m_writer.add_object_change_labels(gcode);
+
+                        std::string timepals_gcode = insert_timelapse_gcode();
+                        gcode += timepals_gcode;
+                        m_writer.set_current_position_clear(false);
+                        //BBS: check whether custom gcode changes the z position. Update if changed
+                        double temp_z_after_timepals_gcode;
+                        if (GCodeProcessor::get_last_z_from_gcode(timepals_gcode, temp_z_after_timepals_gcode)) {
+                            Vec3d pos = m_writer.get_position();
+                            pos(2) = temp_z_after_timepals_gcode;
+                            m_writer.set_position(pos);
+                        }
+                        has_insert_timelapse_gcode = true;
                     }
-                    has_insert_timelapse_gcode = true;
+                    gcode += m_wipe_tower->tool_change(*this, extruder_id, extruder_id == layer_tools.extruders.back());
                 }
-                gcode += m_wipe_tower->tool_change(*this, extruder_id, extruder_id == layer_tools.extruders.back());
-            }
-        } else {
-            gcode += this->set_extruder(extruder_id, print_z);
+            } else {
+                gcode += m_tool_change_later.is_tool_change_later ? "" : this->set_extruder(extruder_id, print_z);
         }
 
         // let analyzer tag generator aware of a role type change
@@ -4175,7 +4181,9 @@ LayerResult GCode::process_layer(
                 }
                 //FIXME order islands?
                 // Sequential tool path ordering of multiple parts within the same object, aka. perimeter tracking (#5511)
+                m_current_region_idx = -1;
                 for (ObjectByExtruder::Island &island : instance_to_print.object_by_extruder.islands) {
+                    m_current_region_idx++;
                     const auto& by_region_specific = is_anything_overridden ? island.by_region_per_copy(by_region_per_copy_cache, static_cast<unsigned int>(instance_to_print.instance_id), extruder_id, print_wipe_extrusions != 0) : island.by_region;
                     //BBS: add brim by obj by extruder
                     if (this->m_objsWithBrim.find(instance_to_print.print_object.id()) != this->m_objsWithBrim.end() && !print_wipe_extrusions) {
@@ -4470,6 +4478,7 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
     // next copies (if any) would not detect the correct orientation
 
     bool is_hole = (loop.loop_role() & elrHole) == elrHole;
+    bool was_clockwise = loop.make_counter_clockwise();
 
     if (m_config.spiral_mode && !is_hole) {
         // if spiral vase, we have to ensure that all contour are in the same orientation.
@@ -4513,6 +4522,7 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
 //    description += ExtrusionLoop::role_to_string(loop.loop_role());
 //    description += ExtrusionEntity::role_to_string(path->role);
         // don't apply small perimeter setting for overhangs/bridges/non-perimeters
+        path->is_loop  = true;
         is_small_peri = is_perimeter(path->role()) && !is_bridge(path->role()) && small_peri_speed > 0 && (path->get_overhang_degree() == 0 || path->get_overhang_degree() > 5);
         gcode += this->_extrude(*path, description, is_small_peri ? small_peri_speed : speed);
     }
@@ -4529,44 +4539,124 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
                 m_wipe.path.append(path.polyline);  // TODO: don't limit wipe to last path
         }
     }
-
     // make a little move inwards before leaving loop
-    if (m_config.wipe_on_loops.value && paths.back().role() == erExternalPerimeter && m_layer != NULL && m_config.wall_loops.value > 1 && paths.front().size() >= 2 && paths.back().polyline.points.size() >= 3) {
+    if (check_machine_v6() && m_wipe.enable && paths.back().role() == erExternalPerimeter && m_layer != NULL /*&& m_config.wall_loops.value > 1*/
+        && paths.front().size() >= 2 && paths.back().polyline.points.size() >= 2 && 
+        m_current_region_idx > -1 && m_current_region_idx < m_layer->lslices.size()) {
         // detect angle between last and first segment
         // the side depends on the original winding order of the polygon (inwards for contours, outwards for holes)
         //FIXME improve the algorithm in case the loop is tiny.
         //FIXME improve the algorithm in case the loop is split into segments with a low number of points (see the Point b query).
-        Point a = paths.front().polyline.points[1];  // second point
-        Point b = *(paths.back().polyline.points.end()-3);       // second to last point
-        if (is_hole == loop.is_counter_clockwise()) {
-            // swap points
-            Point c = a; a = b; b = c;
-        }
+        // detect angle between last and first segment
+        // the side depends on the original winding order of the polygon (left for contours, right for holes)
+        // FIXME improve the algorithm in case the loop is tiny.
+        // FIXME improve the algorithm in case the loop is split into segments with a low number of points (see the Point b query).
+        double     nd             = scale_(EXTRUDER_CONFIG(nozzle_diameter));
+        ExPolygons current_region = m_layer->lslices[m_current_region_idx].simplify(m_scaled_resolution);
+        ExPolygons inner_area     = offset_ex(current_region, -nd);
+        bool       b_small_loop   = loop.length() < 20 * nd;
 
-        double angle = paths.front().first_point().ccw_angle(a, b) / 3;
+        // Angle from the 2nd point to the last point.
+        auto get_angle_inside = [&](Point end_point) {
+            Point  point_before = paths.back().polyline.points.size() == 2 ? paths.back().polyline.first_point() :
+                                                                             *(paths.back().polyline.points.end() - 3);
+            double angle_inside = angle(end_point - paths.front().first_point(), point_before - paths.front().first_point());
+            assert(angle_inside >= -M_PI && angle_inside <= M_PI);
+            // 3rd of this angle will be taken, thus make the angle monotonic before interpolation.
+            if (was_clockwise) {
+                if (angle_inside > 0)
+                    angle_inside -= 2.0 * M_PI;
+            } else {
+                if (angle_inside < 0)
+                    angle_inside += 2.0 * M_PI;
+            }
+            angle_inside = std::max(-M_PI / 5, std::min(M_PI / 5, angle_inside / 3.));
+            return angle_inside;
+        };
 
-        // turn inwards if contour, turn outwards if hole
-        if (is_hole == loop.is_counter_clockwise()) angle *= -1;
+        auto checkPtOutside = [&](Point pt) {
+            bool outside = true;
+            for (ExPolygon& fill_poly : inner_area) {
+                if (fill_poly.contains(pt)) {
+                    outside = false;
+                    break;
+                }
+            }
+            return outside;
+        };
+
+        auto turn90inward = [&](double dist) {
+            Vec2d  p1       = paths.front().polyline.first_point().cast<double>();
+            Vec2d  p2       = (*(paths.back().polyline.points.end() - 2)).cast<double>();
+            Vec2d  v        = p2 - p1;
+            double l2       = v.norm();
+            Vec2d  v_turn90 = Vec2d(v.y(), -v.x());
+            if (was_clockwise)
+                v_turn90 = Vec2d(-v.y(), v.x());
+            Point result = (p1 + v_turn90 * (dist / l2)).cast<coord_t>();
+            return result;
+        };
+
+        auto findInnerAreaClosestPt = [&](Point src_pt) {
+            if (inner_area.empty()) {
+                return turn90inward(nd / 2);
+            }
+            Point   closest_point = src_pt;
+            Polygon closest_points;
+            for (ExPolygon& poly : inner_area) {
+                closest_points.points.push_back(*poly.contour.closest_point(src_pt));
+                for (Polygon& poly_hole : poly.holes) {
+                    closest_points.points.push_back(*poly_hole.closest_point(src_pt));
+                }
+            }
+            closest_point       = *closest_points.closest_point(src_pt);
+            Vec2d  pp           = (closest_point - src_pt).cast<double>();
+            double dist_squared = pp.x() * pp.x() + pp.y() * pp.y();
+            if (dist_squared > 25 * nd * nd) {
+                return turn90inward(nd / 2);
+            }
+            return closest_point;
+        };
 
         // create the destination point along the first segment and rotate it
         // we make sure we don't exceed the segment length because we don't know
         // the rotation of the second segment so we might cross the object boundary
-        Vec2d  p1 = paths.front().polyline.points.front().cast<double>();
-        Vec2d  p2 = paths.front().polyline.points[1].cast<double>();
-        Vec2d  v  = p2 - p1;
-        double nd = scale_(EXTRUDER_CONFIG(nozzle_diameter));
-        double l2 = v.squaredNorm();
-        // Shift by no more than a nozzle diameter.
-        //FIXME Hiding the seams will not work nicely for very densely discretized contours!
-        //BBS. shorten the travel distant before the wipe path
-        double threshold = 0.2;
-        Point  pt = (p1 + v * threshold).cast<coord_t>();
-        if (nd * nd < l2)
-            pt = (p1 + threshold * v * (nd / sqrt(l2))).cast<coord_t>();
-        //Point pt = ((nd * nd >= l2) ? (p1+v*0.4): (p1 + 0.2 * v * (nd / sqrt(l2)))).cast<coord_t>();
-        pt.rotate(angle, paths.front().polyline.points.front());
-        // generate the travel move
-        gcode += m_writer.extrude_to_xy(this->point_to_gcode(pt), 0,"move inwards before travel",true);
+        auto get_retraction_pos = [&](double dist) {
+            Vec2d  p1 = paths.front().polyline.points.front().cast<double>();
+            Vec2d  p2 = paths.front().polyline.points[1].cast<double>();
+            Vec2d  v  = p2 - p1;
+            double l2 = v.squaredNorm();
+
+            // Shift by no more than a nozzle diameter.
+            // FIXME Hiding the seams will not work nicely for very densely discretized contours!
+            Point pt;
+            if (b_small_loop) {
+                pt = ((dist * dist >= l2) ? p2 : (p1 + v * (dist / sqrt(l2)))).cast<coord_t>();
+            } else {
+                int idx = 2;
+                while (dist * dist > l2 && idx < paths.front().polyline.points.size()) {
+                    const Point& next_point = paths.front().polyline.points[idx];
+                    p2                      = next_point.cast<double>();
+                    v                       = p2 - p1;
+                    l2                      = v.squaredNorm();
+                    idx++;
+                }
+                pt = (p1 + v * (dist / sqrt(l2))).cast<coord_t>();
+            }
+            // Rotate pt inside around the seam point.
+            pt.rotate(get_angle_inside(Point(p2.x(), p2.y())), paths.front().polyline.points.front());
+            return pt;
+        };
+        Point retraction_pos;
+        if (b_small_loop) {
+            retraction_pos = get_retraction_pos(1.5 * nd);
+        } else {
+            retraction_pos = get_retraction_pos(2.5 * nd);
+            if (checkPtOutside(retraction_pos)) {
+                retraction_pos = findInnerAreaClosestPt(retraction_pos);
+            }
+        }
+        gcode += m_writer.extrude_to_xy(this->point_to_gcode(retraction_pos), 0, "move inwards before travel", true);
     }
 
     return gcode;
@@ -4792,17 +4882,22 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     //BBS: path.first_point is 2D point. But in lazy raise case, lift z is done in travel_to function.
     //Add m_need_change_layer_lift_z when change_layer in case of no lift if m_last_pos is equal to path.first_point() by chance
     if (!m_last_pos_defined || m_last_pos != path.first_point() || m_need_change_layer_lift_z) {
-        gcode += this->travel_to(
-            path.first_point(),
-            path.role(),
-            "move to first " + description + " point"
-        );
+        if (!m_tool_change_later.is_tool_change_later || !m_writer.need_toolchange(m_tool_change_later.extruder_id)) {
+            gcode += this->travel_to(path.first_point(), path.role(), "move to first " + description + " point");
+        }
         m_need_change_layer_lift_z = false;
     }
 
     // if needed, write the gcode_label_objects_end then gcode_label_objects_start
     // should be already done by travel_to, but just in case
     m_writer.add_object_change_labels(gcode);
+
+    		// tool change after moszzzzzzzzzzzzzzve to next moves
+    if (m_tool_change_later.is_tool_change_later) {
+        Vec2d first_vec = unscale(path.first_point()) + this->origin();
+        gcode += this->set_extruder(m_tool_change_later.extruder_id, m_tool_change_later.print_z, false, Vec2f(first_vec.x(), first_vec.y()));
+        m_tool_change_later.reset();
+    }
 
     // compensate retraction
     gcode += this->unretract();
@@ -4920,6 +5015,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         } else {
             throw Slic3r::InvalidArgument("Invalid speed");
         }
+        if (!path.is_loop && path.length() <= SMALL_PERIMETER_LENGTH(m_config.small_perimeter_threshold.value))
+            speed = m_config.small_perimeter_speed.get_abs_value(speed);
     }
     //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
     if (speed == 0)
@@ -5417,6 +5514,7 @@ std::string GCode::travel_to(const Point &point, ExtrusionRole role, std::string
 
     // Re-allow reduce_crossing_wall for the next travel moves
     m_avoid_crossing_perimeters.reset_once_modifiers();
+    m_writer.m_to_lift_type = lift_type;
 
     // generate G-code for the travel move
     if (needs_retraction) {
@@ -5453,6 +5551,11 @@ std::string GCode::travel_to(const Point &point, ExtrusionRole role, std::string
                 Vec2d dest2d = this->point_to_gcode(travel.points[i]);
                 Vec3d dest3d(dest2d(0), dest2d(1), m_nominal_z);
                 gcode += m_writer.travel_to_xyz(dest3d, comment+" travel_to_xyz");
+                if (check_machine_v6() && m_writer.get_zhop() > EPSILON) {
+                    gcode += m_writer.travel_to_z(m_writer.get_position().z() - m_writer.get_zhop() - 0.2, "unlift");
+                    gcode += m_writer.travel_to_z(m_writer.get_position().z() + 0.2, "lift");
+                    m_writer.set_zhop(0);
+                }
             } else {
                 gcode += m_writer.travel_to_xy(this->point_to_gcode(travel.points[i]), comment+" travel_to_xy");
             }
@@ -5656,7 +5759,7 @@ std::string GCode::retract(bool toolchange, bool is_last_retraction, LiftType li
     return gcode;
 }
 
-std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool by_object)
+std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool by_object, Vec2f start_pos)
 {
     if (!m_writer.need_toolchange(extruder_id))
         return "";
@@ -5685,7 +5788,8 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
     m_toolchange_count++;
 
     // prepend retraction on the current extruder
-    std::string gcode = this->retract(true, false);
+    LiftType lift_type = to_lift_type(ZHopType(m_config.z_hop_types.get_at(extruder_id)));
+    std::string gcode     = this->retract(true, false, lift_type);
 
     // Always reset the extrusion path, even if the tool change retract is set to zero.
     m_wipe.reset_path();
@@ -5710,6 +5814,13 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
     // standby point and set it to the standby temperature.
     if (m_ooze_prevention.enable && m_writer.extruder() != nullptr)
         gcode += m_ooze_prevention.pre_toolchange(*this);
+    // z hop before travel to wipe tower
+    Vec3d toolchange_pos((double) start_pos.x(), (double) start_pos.y(), print_z + 0.8);
+    bool  do_hop = check_machine_v6()  && start_pos.x() > EPSILON && start_pos.y() > EPSILON;
+    if (do_hop) {
+        m_writer.set_current_position_clear(true);
+        gcode += m_writer.travel_to_xyz(toolchange_pos);
+    }
 
     // BBS
     float new_retract_length = m_config.retraction_length.get_at(extruder_id);
@@ -5842,6 +5953,11 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         gcode += toolchange_command;
     else {
         // user provided his own toolchange gcode, no need to do anything
+    }
+
+    if (do_hop) {
+        gcode += m_writer.travel_to_z(toolchange_pos.z() - 1.0);
+        gcode += m_writer.travel_to_z(toolchange_pos.z() - 0.8);
     }
 
     // Set the temperature if the wipe tower didn't (not needed for non-single extruder MM)

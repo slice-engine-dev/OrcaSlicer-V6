@@ -199,7 +199,7 @@
         "0.4"
     ],
     "z_hop_types": [
-        "Lazy Lift"
+        "Slope Lift"
     ],
-    "z_offset": "0.098"
+    "z_offset": "0"
 }
