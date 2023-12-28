@@ -258,6 +258,28 @@ class ExtrusionQualityEstimator
 public:
     void set_current_object(const PrintObject *object) { current_object = object; }
 
+        bool check_point_is_overhang(Point point, double line_width)
+    {
+        const auto& prev_layer_boundary = prev_layer_boundaries[current_object];
+        if (prev_layer_boundary.get_lines().empty()) {
+            return false;
+        }
+
+        auto get_distance_and_line_idx = [&](Point pt) {
+            Points path;
+            path.push_back(pt);
+            std::vector<ExtendedPoint> extended_points = estimate_points_properties<true, true, true, true>(path, prev_layer_boundary,
+                                                                                                            line_width);
+            return extended_points.back();
+        };
+
+        ExtendedPoint distance_data = get_distance_and_line_idx(point);
+        if (distance_data.distance > 0.25 * line_width) {
+            return true;
+        }
+        return false;
+    }
+
     void prepare_for_new_layer(const PrintObject * obj, const Layer *layer)
     {
         if (layer == nullptr) return;

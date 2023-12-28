@@ -217,7 +217,7 @@
         "50%"
     ],
     "pressure_advance": [
-        "1.15"
+        "0"
     ],
     "reduce_fan_stop_start_freq": [
         "1"

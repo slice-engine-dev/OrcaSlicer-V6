@@ -82,7 +82,7 @@
         "1500"
     ],
     "machine_max_jerk_e": [
-        "1.5"
+        "3"
     ],
     "machine_max_jerk_x": [
         "15"

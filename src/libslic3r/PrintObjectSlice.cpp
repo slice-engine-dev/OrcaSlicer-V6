@@ -1055,13 +1055,13 @@ void PrintObject::slice_volumes()
 
         // If XY Size compensation is also enabled, notify the user that XY Size compensation
         // would not be used because the object is multi-material painted.
-        if (m_config.xy_hole_compensation.value != 0.f || m_config.xy_contour_compensation.value != 0.f) {
-            this->active_step_add_warning(
-                PrintStateBase::WarningLevel::CRITICAL,
-                L("An object's XY size compensation will not be used because it is also color-painted.\nXY Size "
-                  "compensation can not be combined with color-painting."));
-            BOOST_LOG_TRIVIAL(info) << "xy compensation will not work for object " << this->model_object()->name << " for multi filament.";
-        }
+        //if (m_config.xy_hole_compensation.value != 0.f || m_config.xy_contour_compensation.value != 0.f) {
+        //    this->active_step_add_warning(
+        //        PrintStateBase::WarningLevel::CRITICAL,
+        //        L("An object's XY size compensation will not be used because it is also color-painted.\nXY Size "
+        //          "compensation can not be combined with color-painting."));
+        //    BOOST_LOG_TRIVIAL(info) << "xy compensation will not work for object " << this->model_object()->name << " for multi filament.";
+        //}
 
         BOOST_LOG_TRIVIAL(debug) << "Slicing volumes - MMU segmentation";
         apply_mm_segmentation(*this, [print]() { print->throw_if_canceled(); });
@@ -1145,7 +1145,10 @@ void PrintObject::slice_volumes()
                             merged_poly_for_holes_growing = _shrink_contour_holes(std::max(0.f, xy_contour_scaled),
                                                                                   std::max(0.f, xy_hole_scaled),
                                                                                   union_ex(merged_poly_for_holes_growing));
-
+#if 1
+                            for (size_t region_id = 0; region_id < layer->m_regions.size(); ++region_id)
+                                layer->m_regions[region_id]->trim_surfaces(to_polygons(merged_poly_for_holes_growing));
+#else
                             // BBS: clipping regions, priority is given to the first regions.
                             Polygons processed;
                             for (size_t region_id = 0; region_id < layer->regions().size(); ++region_id) {
@@ -1162,6 +1165,7 @@ void PrintObject::slice_volumes()
                                     polygons_append(processed, slices);
                                 layer->m_regions[region_id]->slices.set(std::move(slices), stInternal);
                             }
+#endif
                         }
                         if (min_growth < 0.f || elfoot > 0.f) {
                             // Apply the negative XY compensation. (the ones that is <0)
@@ -1323,12 +1327,23 @@ void PrintObject::apply_conical_overhang() {
 ExPolygons PrintObject::_shrink_contour_holes(double contour_delta, double hole_delta, const ExPolygons& polys) const
 {
     ExPolygons new_ex_polys;
+    double     external_perimeter_extrusion_width = m_shared_regions->all_regions.empty() ?
+                                                        0.5 :
+                                                        m_shared_regions->all_regions.back().get()->config().outer_wall_line_width;
+    double     small_hole_length                  = SMALL_PERIMETER_LENGTH(10.0);
     for (const ExPolygon& ex_poly : polys) {
         Polygons contours;
         Polygons holes;
-        //BBS: modify hole
+        // thin wall hole will do not expand
+        ExPolygons ex_poly_offset   = offset_ex(ex_poly, -scale_(external_perimeter_extrusion_width / 2.0) - hole_delta);
+        int        offset_hole_size = 0;
+        for (ExPolygon exp : ex_poly_offset) {
+            offset_hole_size += exp.holes.size();
+        }
+        bool thin_wall_hole_exsit = offset_hole_size != ex_poly.holes.size() && hole_delta > EPSILON;
+        // BBS: modify hole
         for (const Polygon& hole : ex_poly.holes) {
-            if (hole_delta != 0) {
+            if (hole_delta != 0 && hole.length() < small_hole_length && !thin_wall_hole_exsit) {
                 for (Polygon& newHole : offset(hole, -hole_delta)) {
                     newHole.make_counter_clockwise();
                     holes.emplace_back(std::move(newHole));
@@ -1338,7 +1353,7 @@ ExPolygons PrintObject::_shrink_contour_holes(double contour_delta, double hole_
                 holes.back().make_counter_clockwise();
             }
         }
-        //BBS: modify contour
+        // BBS: modify contour
         if (contour_delta != 0) {
             Polygons new_contours = offset(ex_poly.contour, contour_delta);
             if (new_contours.size() == 0)

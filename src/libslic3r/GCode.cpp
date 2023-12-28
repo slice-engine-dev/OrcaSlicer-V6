@@ -4479,6 +4479,7 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
 
     bool is_hole = (loop.loop_role() & elrHole) == elrHole;
     bool was_clockwise = loop.make_counter_clockwise();
+    double nd            = scale_(EXTRUDER_CONFIG(nozzle_diameter));
 
     if (m_config.spiral_mode && !is_hole) {
         // if spiral vase, we have to ensure that all contour are in the same orientation.
@@ -4514,6 +4515,24 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
         else
             small_peri_speed = m_config.small_perimeter_speed.get_abs_value(m_config.outer_wall_speed);
     }
+    // remove mini loop which is all in overhang,if support is not used;
+    if (check_machine_v6() && !m_config.enable_support.getBool() && loop.length() <= SMALL_PERIMETER_LENGTH(0.3) &&
+        this->m_layer_index > 0) {
+        bool all_in_overhang = true;
+        for (const ExtrusionPath& path : paths) {
+            for (Point pt : path.polyline) {
+                if (!m_extrusion_quality_estimator.check_point_is_overhang(pt, unscaled(nd))) {
+                    all_in_overhang = false;
+                    break;
+                }
+            }
+            if (!all_in_overhang) {
+                break;
+            }
+        }
+        if (all_in_overhang)
+            return "";
+    }
 
     // extrude along the path
     std::string gcode;
@@ -4547,11 +4566,6 @@ std::string GCode::extrude_loop(ExtrusionLoop loop, std::string description, dou
         // the side depends on the original winding order of the polygon (inwards for contours, outwards for holes)
         //FIXME improve the algorithm in case the loop is tiny.
         //FIXME improve the algorithm in case the loop is split into segments with a low number of points (see the Point b query).
-        // detect angle between last and first segment
-        // the side depends on the original winding order of the polygon (left for contours, right for holes)
-        // FIXME improve the algorithm in case the loop is tiny.
-        // FIXME improve the algorithm in case the loop is split into segments with a low number of points (see the Point b query).
-        double     nd             = scale_(EXTRUDER_CONFIG(nozzle_diameter));
         ExPolygons current_region = m_layer->lslices[m_current_region_idx].simplify(m_scaled_resolution);
         ExPolygons inner_area     = offset_ex(current_region, -nd);
         bool       b_small_loop   = loop.length() < 20 * nd;
