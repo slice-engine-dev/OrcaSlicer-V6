@@ -632,7 +632,7 @@ void WipeTower2::set_extruder(size_t idx, const PrintConfig& config)
 
     m_perimeter_width = nozzle_diameter * Width_To_Nozzle_Ratio; // all extruders are now assumed to have the same diameter
 
-    if (m_semm) {
+    if (0/*m_semm*/) {
         std::istringstream stream{config.filament_ramming_parameters.get_at(idx)};
         float speed = 0.f;
         stream >> m_filpar[idx].ramming_line_width_multiplicator >> m_filpar[idx].ramming_step_multiplicator;
